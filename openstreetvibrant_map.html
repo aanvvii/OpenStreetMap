@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OpenStreetMap &mdash; find places nearby</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  .leaflet-top { margin-top: 56px; }
+  .pin-hot { outline: 3px solid #f59e0b; outline-offset: 2px; }
+  .toast { animation: tin .25s ease-out both; }
+  @keyframes tin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+</style>
+</head>
+<body class="h-[100dvh] overflow-hidden bg-slate-900 font-sans text-slate-800 antialiased">
+
+<!-- Map always fills the whole viewport, so zooming the browser in or out never shrinks it -->
+<div id="map" class="fixed inset-0" role="application" aria-label="Map"></div>
+
+<!-- ============ Navigation ============ -->
+<nav class="fixed inset-x-0 top-0 z-[1100] flex h-14 items-center justify-between bg-gradient-to-r from-blue-600 via-cyan-600 to-emerald-500 px-3 text-white shadow-lg sm:px-6" aria-label="Main">
+  <a href="#" class="flex items-center gap-2 text-lg font-black tracking-tight focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70 rounded-lg">
+    <span class="grid h-9 w-9 place-items-center rounded-xl bg-white/20 text-xl" aria-hidden="true">&#128205;</span>OpenStreetMap
+  </a>
+  <div class="flex items-center gap-1.5 text-sm font-bold sm:gap-2">
+    <button id="navSearch" type="button" class="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-2 hover:bg-white/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"><span aria-hidden="true">&#128269;</span><span class="hidden sm:inline">Search</span></button>
+    <button id="navLocate" type="button" class="flex items-center gap-1.5 rounded-full bg-white/15 px-3 py-2 hover:bg-white/30 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"><span aria-hidden="true">&#127919;</span><span class="hidden sm:inline">Near me</span></button>
+    <button id="navSaved" type="button" class="flex items-center gap-1.5 rounded-full bg-white px-3 py-2 text-emerald-700 hover:bg-amber-100 focus:outline-none focus-visible:ring-4 focus-visible:ring-white/70"><span aria-hidden="true">&#11088;</span><span class="hidden sm:inline">Saved</span><span id="savedN" class="rounded-full bg-emerald-600 px-1.5 text-xs text-white">0</span></button>
+  </div>
+</nav>
+
+<!-- ============ Centred search bar (auto-hides after a search, returns after 5 s idle) ============ -->
+<div id="searchWrap" class="fixed left-1/2 top-[4.25rem] z-[1050] w-[min(94vw,46rem)] -translate-x-1/2 transition duration-500 motion-reduce:transition-none">
+  <form id="searchForm" novalidate class="rounded-3xl bg-white/95 p-3 shadow-2xl ring-1 ring-black/5 backdrop-blur sm:p-4">
+    <div class="flex flex-col gap-2 sm:flex-row">
+      <div class="relative flex-1">
+        <label for="place" class="sr-only">Place to search near</label>
+        <span class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" aria-hidden="true">&#128205;</span>
+        <input id="place" type="text" autocomplete="off" placeholder="Try &ldquo;Koramangala&rdquo; or &ldquo;Connaught Place&rdquo;" aria-describedby="placeErr"
+               class="w-full rounded-2xl border-2 border-slate-200 bg-white py-3 pl-10 pr-3 text-base focus:border-emerald-500 focus:outline-none focus:ring-4 focus:ring-emerald-200" />
+      </div>
+      <button id="goBtn" type="submit" class="flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-blue-600 to-emerald-500 px-6 py-3 font-extrabold text-white shadow-md hover:from-blue-700 hover:to-emerald-700 focus:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300 disabled:opacity-60">
+        <svg id="spin" class="hidden h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" opacity=".25"/><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+        <span id="goLabel">Explore</span>
+      </button>
+    </div>
+    <p id="placeErr" class="mt-2 hidden text-sm font-bold text-red-600"></p>
+    <fieldset class="mt-3 flex flex-wrap items-center gap-2">
+      <legend class="sr-only">What do you need?</legend>
+      <span id="chips" class="contents"></span>
+      <label for="radius" class="sr-only">Distance</label>
+      <select id="radius" class="ml-auto rounded-full border-2 border-slate-200 bg-white px-3 py-1.5 text-sm font-bold focus:border-emerald-500 focus:outline-none">
+        <option value="500">500 m</option><option value="1000" selected>1 km</option><option value="2000">2 km</option><option value="5000">5 km</option>
+      </select>
+    </fieldset>
+    <p id="status" role="status" aria-live="polite" class="mt-2 min-h-[1.25rem] text-sm text-slate-500"></p>
+  </form>
+</div>
+
+<button id="areaBtn" type="button" class="fixed left-1/2 top-[4.5rem] z-[1040] hidden -translate-x-1/2 rounded-full bg-white px-5 py-2.5 text-sm font-extrabold text-emerald-700 shadow-xl ring-2 ring-emerald-500 hover:bg-emerald-50 focus:outline-none focus-visible:ring-4">&#128260; Search this area</button>
+
+<!-- ============ Results panel: side card on desktop, bottom sheet on phones ============ -->
+<aside id="panel" class="fixed inset-x-2 bottom-5 z-[1000] hidden max-h-[46dvh] flex-col rounded-3xl bg-white/95 shadow-2xl ring-1 ring-black/5 backdrop-blur lg:inset-x-auto lg:bottom-6 lg:right-4 lg:top-[4.25rem] lg:max-h-none lg:w-96" aria-label="Results">
+  <div class="flex items-center gap-2 border-b p-3">
+    <div class="flex flex-1 gap-1 rounded-full bg-slate-100 p-1 text-sm font-extrabold" role="tablist">
+      <button data-tab="results" role="tab" class="flex-1 rounded-full px-3 py-1.5">Results</button>
+      <button data-tab="saved" role="tab" class="flex-1 rounded-full px-3 py-1.5">Saved</button>
+    </div>
+    <button id="closePanel" type="button" aria-label="Close panel" class="grid h-9 w-9 place-items-center rounded-full bg-slate-100 font-black hover:bg-slate-200 focus:outline-none focus-visible:ring-4 focus-visible:ring-emerald-300">&#10005;</button>
+  </div>
+  <div id="panelBody" class="flex min-h-0 flex-1 flex-col">
+    <div id="resultsTab" class="flex min-h-0 flex-1 flex-col">
+      <div class="space-y-2 p-3 pb-1">
+        <p id="panelTitle" class="text-sm font-extrabold"></p>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm font-semibold">
+          <input id="nameFilter" type="text" placeholder="Filter by name" aria-label="Filter by name" class="min-w-0 flex-1 rounded-full border-2 border-slate-200 px-3 py-1 focus:border-emerald-500 focus:outline-none" />
+          <label class="flex items-center gap-1"><input id="fWheel" type="checkbox" class="accent-emerald-600" /> &#9855; Accessible</label>
+          <label class="flex items-center gap-1"><input id="fHours" type="checkbox" class="accent-emerald-600" /> &#128339; Hours</label>
+        </div>
+        <p id="stats" class="text-xs text-slate-500"></p>
+      </div>
+      <div id="msg" class="px-3"></div>
+      <ul id="results" class="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 pt-1"></ul>
+    </div>
+    <ul id="saved" class="hidden min-h-0 flex-1 space-y-2 overflow-y-auto p-3"></ul>
+  </div>
+</aside>
+
+<div id="toasts" class="pointer-events-none fixed inset-x-0 top-20 z-[1200] flex flex-col items-center gap-2 px-4" role="status"></div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => Array.from(document.querySelectorAll(s));
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const CATS = { pharmacy: ['\u{1F48A}', 'Pharmacy'], hospital: ['\u{1F3E5}', 'Hospital'], atm: ['\u{1F3E7}', 'ATM'], fuel: ['\u26FD', 'Fuel'], toilets: ['\u{1F6BB}', 'Toilets'], drinking_water: ['\u{1F6B0}', 'Water'] };
+  const ZOOM = { 500: 16, 1000: 15, 2000: 14, 5000: 13 };
+  const SAVED_KEY = 'nearbynow:saved', IDLE_MS = 5000;
+  const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'], NOMINATIM = 'https://nominatim.openstreetmap.org/search';
+
+  const store = {
+    get: (k, f) => { try { return JSON.parse(localStorage.getItem(k)) ?? f; } catch (e) { return f; } },
+    set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  };
+  function toast(m) {
+    const t = document.createElement('div');
+    t.className = 'toast pointer-events-auto rounded-full bg-slate-900 px-5 py-2.5 text-sm font-bold text-white shadow-xl';
+    t.textContent = m; $('#toasts').appendChild(t); setTimeout(() => t.remove(), 3200);
+  }
+  function km(a, b) {
+    const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLng = (b.lng - a.lng) * r;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLng / 2) ** 2;
+    return 12742 * Math.asin(Math.sqrt(h));
+  }
+  async function getJSON(url, opts, ms = 25000) {                    // Fetch API with timeout + status check
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), ms);
+    try {
+      const res = await fetch(url, Object.assign({ signal: ctl.signal }, opts));
+      if (res.status === 429) throw new Error('busy');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } finally { clearTimeout(timer); }
+  }
+
+  /* ---------- map (starts on the same view as the OSM link: India, zoom 5) ---------- */
+  const map = L.map('map', {
+    minZoom: 2,
+    worldCopyJump: true
+  }).setView([21.92, 79.74], 5);
+  map.attributionControl.setPosition('bottomleft');
+  const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/';   // keyless tiles, work from a local file
+  const credit = 'Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, OpenStreetMap contributors';
+  const street = L.tileLayer(esri + 'World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: credit }).addTo(map);
+  const light = L.tileLayer(esri + 'Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}', { maxNativeZoom: 16, maxZoom: 19, attribution: credit });
+  const sat = L.tileLayer(esri + 'World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri &mdash; Maxar, Earthstar Geographics' });
+  L.control.layers({ 'Street': street, 'Light': light, 'Satellite': sat }, null, { position: 'topleft' }).addTo(map);
+  let tileWarned = false;
+  [street, light, sat].forEach((t) => t.on('tileerror', () => { if (!tileWarned) { tileWarned = true; toast('Some map tiles did not load. Try another map style (top-left).'); } }));
+  const layer = L.layerGroup().addTo(map), savedLayer = L.layerGroup().addTo(map);
+  let originMarker = null, searchPt = null, lastOpts = null, places = [], markers = {}, moved = false, tab = 'results';
+
+  /* ---------- category chips ---------- */
+  $('#chips').innerHTML = Object.entries(CATS).map(([k, [e, l]], i) =>
+    '<label class="cursor-pointer"><input type="radio" name="cat" value="' + k + '" class="peer sr-only"' + (i ? '' : ' checked') + ' />' +
+    '<span class="flex items-center gap-1 rounded-full border-2 border-slate-200 bg-white px-3 py-1.5 text-sm font-bold transition hover:border-emerald-400 peer-checked:border-transparent peer-checked:bg-gradient-to-r peer-checked:from-blue-600 peer-checked:to-emerald-600 peer-checked:text-white peer-focus-visible:ring-4 peer-focus-visible:ring-emerald-300">' + e + ' ' + l + '</span></label>').join('');
+  const cat = () => $('input[name=cat]:checked').value;
+
+  /* ---------- search bar: hide after search, return after 5 s without activity ---------- */
+  const wrap = $('#searchWrap'), HIDE = ['-translate-y-[170%]', 'opacity-0', 'pointer-events-none'];
+  let barHidden = false, idleTimer;
+  function updateArea() { $('#areaBtn').classList.toggle('hidden', !(barHidden && moved && searchPt)); }
+  function hideBar() {
+    barHidden = true; wrap.classList.add(...HIDE); wrap.inert = true; arm(); updateArea();
+  }
+  function showBar(focus) {
+    clearTimeout(idleTimer); barHidden = false; wrap.classList.remove(...HIDE); wrap.inert = false; updateArea();
+    if (focus) $('#place').focus();
+  }
+  function arm() { clearTimeout(idleTimer); if (barHidden) idleTimer = setTimeout(() => showBar(false), IDLE_MS); }
+  ['mousemove', 'pointerdown', 'keydown', 'wheel', 'touchstart'].forEach((t) => window.addEventListener(t, arm, { passive: true }));
+  $('#navSearch').addEventListener('click', () => showBar(true));
+  document.addEventListener('keydown', (e) => {
+    const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (e.key === '/' && !typing) { e.preventDefault(); showBar(true); }
+    else if (e.key === 'Escape') { document.activeElement.blur(); if (searchPt && !barHidden) hideBar(); hidePanel(); }
+  });
+
+  /* ---------- form: validation + feedback ---------- */
+  const place = $('#place'), placeErr = $('#placeErr');
+  const setStatus = (m) => { $('#status').textContent = m; };
+  function validPlace() {
+    const v = place.value.trim(), ok = v.length >= 3 && /[a-z\u00C0-\uFFFF]/i.test(v);
+    placeErr.textContent = ok ? '' : 'Please type a place name of at least 3 letters, or tap \u201CNear me\u201D.';
+    placeErr.classList.toggle('hidden', ok);
+    place.classList.toggle('border-red-500', !ok);
+    place.setAttribute('aria-invalid', String(!ok));
+    return ok;
+  }
+  function setBusy(b) {
+    $('#goBtn').disabled = b; $('#spin').classList.toggle('hidden', !b);
+    $('#goLabel').textContent = b ? 'Searching\u2026' : 'Explore';
+  }
+  place.addEventListener('focus', () => setStatus('Tip: add the city for the best match, e.g. \u201CIndiranagar, Bengaluru\u201D.'));
+  place.addEventListener('blur', () => { if (place.value) validPlace(); });
+  place.addEventListener('input', () => { if (place.getAttribute('aria-invalid') === 'true') validPlace(); });
+
+  async function geocode(q) {                                       // Nominatim first, Photon as a fallback
+    try {
+      const d = await getJSON(NOMINATIM + '?format=jsonv2&limit=1&q=' + encodeURIComponent(q));
+      return d.length ? { lat: +d[0].lat, lng: +d[0].lon, label: d[0].display_name.split(',')[0] } : null;
+    } catch (e) {
+      const d = await getJSON('https://photon.komoot.io/api/?limit=1&q=' + encodeURIComponent(q));
+      const f = d.features && d.features[0];
+      return f ? { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label: f.properties.name || q } : null;
+    }
+  }
+  $('#searchForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!validPlace()) { place.focus(); return; }
+    setBusy(true); setStatus('Finding \u201C' + place.value.trim() + '\u201D\u2026');
+    try {
+      const pt = await geocode(place.value.trim());
+      if (!pt) { setStatus('We could not find that place. Try adding the city or a nearby landmark.'); return; }
+      setStatus('');
+      runSearch(pt, { fly: true, fit: true });
+    } catch (err) {
+      setStatus(err.message === 'busy' ? 'The lookup service is busy. Wait a few seconds and try again.' : 'Place lookup failed. Check your connection and try again.');
+    } finally { setBusy(false); }
+  });
+  $('#navLocate').addEventListener('click', () => {
+    if (!navigator.geolocation) { toast('This browser cannot share your location.'); return; }
+    toast('Finding your location\u2026');
+    navigator.geolocation.getCurrentPosition(
+      (p) => runSearch({ lat: p.coords.latitude, lng: p.coords.longitude, label: 'your location' }, { fly: true, fit: true }),
+      () => { showBar(true); setStatus('Location was blocked. Type a place name instead.'); }, { timeout: 8000 });
+  });
+
+  /* ---------- data: Overpass JSON -> model ---------- */
+  async function fetchPlaces(pt, c, radius) {
+    const q = '[out:json][timeout:20];nwr["amenity"="' + c + '"](around:' + radius + ',' + pt.lat + ',' + pt.lng + ');out center tags 80;';
+    let data, lastErr;
+    for (const url of OVERPASS) {                                   // try the next mirror if one is down
+      try { data = await getJSON(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(q) }); break; }
+      catch (e) { lastErr = e; }
+    }
+    if (!data) throw lastErr;
+    return data.elements.map((el) => {
+      const lat = el.lat ?? el.center?.lat, lng = el.lon ?? el.center?.lon, t = el.tags || {};
+      return { id: el.type + '/' + el.id, name: t.name || 'Unnamed ' + CATS[c][1].toLowerCase(), lat, lng, km: km(pt, { lat, lng }), hours: t.opening_hours || '', wheelchair: t.wheelchair || '' };
+    }).filter((p) => p.lat != null).sort((a, b) => a.km - b.km);
+  }
+
+  /* ---------- panel states: loading / empty / error ---------- */
+  function showPanel() { const p = $('#panel'); p.classList.remove('hidden'); p.classList.add('flex'); setTab(tab); }
+  function hidePanel() { const p = $('#panel'); p.classList.add('hidden'); p.classList.remove('flex'); showSavedPins(false); }
+  function msg(kind, text, action) {
+    const m = $('#msg');
+    if (!kind) { m.innerHTML = ''; return; }
+    if (kind === 'loading') {
+      m.innerHTML = '<div role="status" class="space-y-2 py-2"><p class="flex items-center gap-2 text-sm font-bold text-emerald-700"><svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" opacity=".25"/><path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>' + esc(text) + '</p>' +
+        '<div class="h-16 animate-pulse rounded-2xl bg-slate-100"></div><div class="h-16 animate-pulse rounded-2xl bg-slate-100"></div></div>';
+      return;
+    }
+    const icon = kind === 'error' ? '\u26A0\uFE0F' : '\u{1F50D}';
+    m.innerHTML = '<div class="my-2 rounded-2xl ' + (kind === 'error' ? 'bg-red-50 text-red-800' : 'bg-amber-50 text-amber-900') + ' p-4 text-center text-sm font-semibold"><p class="text-2xl" aria-hidden="true">' + icon + '</p><p class="mt-1">' + esc(text) + '</p>' +
+      (action ? '<button data-act="' + action[0] + '" class="mt-3 rounded-full bg-slate-900 px-4 py-1.5 text-xs font-extrabold text-white hover:bg-slate-700">' + esc(action[1]) + '</button>' : '') + '</div>';
+  }
+  $('#msg').addEventListener('click', (e) => {
+    const a = e.target.dataset.act; if (!a) return;
+    if (a === 'retry' && lastOpts) runSearch(searchPt, Object.assign({}, lastOpts, { fly: false }));
+    if (a === 'widen') { const r = $('#radius'); r.selectedIndex = Math.min(r.selectedIndex + 1, r.options.length - 1); runSearch(searchPt, { fly: false, fit: true }); }
+  });
+
+  /* ---------- main search routine ---------- */
+  function pinIcon(c) {
+    return L.divIcon({ className: '', iconSize: [38, 38], iconAnchor: [19, 19],
+      html: '<div class="grid h-[38px] w-[38px] place-items-center rounded-full bg-gradient-to-br from-blue-500 to-emerald-400 text-lg shadow-lg ring-2 ring-white transition-transform">' + CATS[c][0] + '</div>' });
+  }
+  async function runSearch(pt, opts) {
+    const c = cat(), radius = +$('#radius').value;
+    searchPt = pt; lastOpts = opts; moved = false; places = []; layer.clearLayers(); markers = {};
+    if (originMarker) map.removeLayer(originMarker);
+    originMarker = L.circleMarker([pt.lat, pt.lng], { radius: 9, color: '#2563eb', weight: 4, fillColor: '#fbbf24', fillOpacity: 1 }).addTo(map).bindTooltip(pt.label);
+    if (opts.fly) map.flyTo([pt.lat, pt.lng], ZOOM[radius], { duration: 1.6 });
+    hideBar(); showPanel(); setTab('results'); render();
+    $('#panelTitle').textContent = CATS[c][1] + ' near ' + pt.label;
+    msg('loading', 'Loading ' + CATS[c][1].toLowerCase() + ' data\u2026');
+    try {
+      places = await fetchPlaces(pt, c, radius);
+      msg(null); render();
+      if (!places.length) { msg('empty', 'No ' + CATS[c][1].toLowerCase() + ' is mapped within ' + (radius >= 1000 ? radius / 1000 + ' km' : radius + ' m') + '.', radius < 5000 ? ['widen', 'Search a wider area'] : null); return; }
+      if (opts.fit) {
+        const lg = innerWidth >= 1024, b = L.latLngBounds([[pt.lat, pt.lng]].concat(places.slice(0, 30).map((p) => [p.lat, p.lng])));
+        map.fitBounds(b, { paddingTopLeft: [40, 100], paddingBottomRight: [lg ? 420 : 40, lg ? 40 : Math.round(innerHeight * 0.5)], maxZoom: 17 });
+      }
+    } catch (err) {
+      msg('error', err.name === 'AbortError' ? 'The data server took too long to answer.' : err.message === 'busy' ? 'The data server is busy right now.' : 'We could not load nearby places (' + err.message + ').', ['retry', 'Try again']);
+    }
+  }
+
+  /* ---------- results list + markers ---------- */
+  function visible() {
+    const q = $('#nameFilter').value.trim().toLowerCase();
+    return places.filter((p) => p.name.toLowerCase().includes(q) && (!$('#fWheel').checked || p.wheelchair === 'yes') && (!$('#fHours').checked || p.hours));
+  }
+  const isSaved = (id) => store.get(SAVED_KEY, []).some((s) => s.id === id);
+  function render() {
+    const list = visible(), ul = $('#results'), n = places.length;
+    layer.clearLayers(); markers = {}; ul.innerHTML = '';
+    const pct = (f) => Math.round(places.filter(f).length / n * 100);
+    $('#stats').textContent = n ? n + ' found \u00B7 ' + pct((p) => p.hours) + '% list opening hours \u00B7 ' + pct((p) => p.wheelchair) + '% have access info' : '';
+    if (n && !list.length) msg('empty', 'No results match your filters.', null); else if (n) msg(null);
+    list.forEach((p, i) => {
+      const m = L.marker([p.lat, p.lng], { icon: pinIcon(cat()) }).addTo(layer).bindPopup('<b>' + esc(p.name) + '</b><br>' + Math.round(p.km * 1000) + ' m away<br><button type="button" data-save="' + p.id + '" class="mt-2 rounded-full bg-emerald-600 px-3 py-1 text-xs font-bold text-white hover:bg-emerald-700">' + (isSaved(p.id) ? '\u2B50 Saved \u2013 tap to remove' : '\u2606 Save this place') + '</button>');
+      m.on('click', () => { const li = ul.querySelector('[data-id="' + p.id + '"]'); if (li) { li.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); li.classList.add('ring-4', 'ring-amber-400'); setTimeout(() => li.classList.remove('ring-4', 'ring-amber-400'), 1200); } });
+      markers[p.id] = m;
+      const wc = p.wheelchair === 'yes' ? ['\u267F Accessible', 'bg-emerald-100 text-emerald-800'] : p.wheelchair ? ['\u267F ' + p.wheelchair, 'bg-amber-100 text-amber-800'] : ['\u267F Not mapped', 'bg-slate-100 text-slate-500'];
+      const li = document.createElement('li');
+      li.dataset.id = p.id;
+      li.className = 'rounded-2xl border-2 border-slate-100 bg-white p-3 shadow-sm transition hover:border-emerald-300';
+      li.innerHTML = '<div class="flex items-start justify-between gap-2"><p class="font-extrabold leading-tight">' + (i + 1) + '. ' + esc(p.name) + '</p>' +
+        '<span class="shrink-0 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-black text-blue-700">' + (p.km < 1 ? Math.round(p.km * 1000) + ' m' : p.km.toFixed(1) + ' km') + '</span></div>' +
+        '<div class="mt-2 flex flex-wrap gap-1.5 text-xs font-semibold"><span class="rounded-full px-2 py-0.5 ' + wc[1] + '">' + wc[0] + '</span><span class="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">&#128339; ' + (p.hours ? esc(p.hours) : 'Hours not mapped') + '</span></div>' +
+        '<div class="mt-2 flex items-center justify-between text-xs font-bold"><a class="text-emerald-700 underline" target="_blank" rel="noopener" href="https://www.openstreetmap.org/directions?from=' + searchPt.lat + '%2C' + searchPt.lng + '&to=' + p.lat + '%2C' + p.lng + '">Directions &rarr;</a>' +
+        '<button type="button" data-save="' + p.id + '" aria-label="' + (isSaved(p.id) ? 'Remove ' : 'Save ') + esc(p.name) + '" class="rounded-full border-2 px-3 py-1 text-xs font-extrabold transition ' + (isSaved(p.id) ? 'border-amber-400 bg-amber-100 text-amber-800' : 'border-emerald-500 text-emerald-700 hover:bg-emerald-50') + '">' + (isSaved(p.id) ? '\u2B50 Saved' : '\u2606 Save') + '</button></div>';
+      ul.appendChild(li);
+    });
+  }
+  function hot(id, on) {
+    const m = markers[id], el = m && m.getElement() && m.getElement().firstElementChild; if (!el) return;
+    el.classList.toggle('scale-150', on); el.classList.toggle('pin-hot', on); m.setZIndexOffset(on ? 1000 : 0);
+  }
+  map.on('popupopen', (e) => {
+    const popup = e.popup.getElement();
+    const b = popup && popup.querySelector('[data-save]');
+    if (b) b.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSave(b.dataset.save);
+      map.closePopup();
+    }, { once: true });
+  });
+  const results = $('#results');
+  results.addEventListener('mouseover', (e) => { const li = e.target.closest('li[data-id]'); if (li) hot(li.dataset.id, true); });
+  results.addEventListener('mouseout', (e) => { const li = e.target.closest('li[data-id]'); if (li && !li.contains(e.relatedTarget)) hot(li.dataset.id, false); });
+  // Handle Save/Remove buttons before the card click handler so one click always saves exactly once.
+  results.addEventListener('click', (e) => {
+    const sb = e.target.closest('button[data-save]');
+    if (sb) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleSave(sb.getAttribute('data-save'));
+      return;
+    }
+    const li = e.target.closest('li[data-id]');
+    if (!li || e.target.closest('a')) return;
+    const m = markers[li.dataset.id];
+    if (m) { map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 17), { duration: 0.8 }); m.openPopup(); }
+  });
+  ['#fWheel', '#fHours'].forEach((s) => $(s).addEventListener('change', render));
+  $('#nameFilter').addEventListener('input', render);
+  ['input[name=cat]', '#radius'].forEach((s) => $$(s).forEach((el) => el.addEventListener('change', () => { if (searchPt) runSearch(searchPt, { fly: false, fit: true }); })));
+
+  /* ---------- saved places (JSON in localStorage) ---------- */
+  function toggleSave(id) {
+    let s = store.get(SAVED_KEY, []);
+    const existing = s.find((x) => x.id === id);
+    if (existing) {
+      s = s.filter((x) => x.id !== id);
+      toast('Removed from saved.');
+    } else {
+      const p = places.find((x) => x.id === id);
+      if (!p) {
+        toast('Could not find this place. Search again and retry.');
+        return;
+      }
+      s.push({ id: p.id, name: p.name, lat: p.lat, lng: p.lng, cat: cat() });
+      toast('⭐ Saved ' + p.name);
+    }
+    store.set(SAVED_KEY, s);
+    // Verify persistence; some restrictive browser contexts block localStorage.
+    const persisted = store.get(SAVED_KEY, null);
+    if (!persisted || persisted.length !== s.length) {
+      toast('Browser storage is blocked. Open this app through a local web server to save places.');
+      return;
+    }
+    renderSaved();
+    render();
+    showSavedPins(tab === 'saved');
+  }
+  function showSavedPins(on) {
+    savedLayer.clearLayers();
+    if (!on) return;
+    store.get(SAVED_KEY, []).forEach((x) => L.marker([x.lat, x.lng], { icon: L.divIcon({ className: '', iconSize: [38, 38], iconAnchor: [19, 19],
+      html: '<div class="grid h-[38px] w-[38px] place-items-center rounded-full bg-gradient-to-br from-amber-300 to-amber-500 text-lg shadow-lg ring-2 ring-white">\u2B50</div>' }) }).addTo(savedLayer).bindTooltip(x.name));
+  }
+  function fitSaved() {
+    const s = store.get(SAVED_KEY, []);
+    if (!s.length) { toast('No saved places yet. Search, then tap \u2606 Save on a result.'); return; }
+    const lg = innerWidth >= 1024;
+    map.fitBounds(L.latLngBounds(s.map((x) => [x.lat, x.lng])), { paddingTopLeft: [40, 100], paddingBottomRight: [lg ? 420 : 40, lg ? 40 : Math.round(innerHeight * 0.5)], maxZoom: 16 });
+  }
+  function renderSaved() {
+    const s = store.get(SAVED_KEY, []), ul = $('#saved');
+    $('#savedN').textContent = s.length;
+    ul.innerHTML = s.length ? '' : '<li class="rounded-2xl bg-amber-50 p-4 text-center text-sm font-semibold text-amber-900">Nothing saved yet. Search for a place, then tap &ldquo;&#9734; Save&rdquo; on a result.</li>';
+    s.forEach((x) => {
+      const li = document.createElement('li');
+      li.className = 'flex items-center justify-between gap-2 rounded-2xl border-2 border-slate-100 bg-white p-3';
+      li.innerHTML = '<button data-go="' + esc(x.id) + '" class="min-w-0 flex-1 truncate text-left font-bold hover:text-emerald-700">' + CATS[x.cat][0] + ' ' + esc(x.name) + '</button><button data-rm="' + esc(x.id) + '" class="text-xs font-bold text-red-600 hover:underline">Remove</button>';
+      ul.appendChild(li);
+    });
+    if (tab === 'saved') showSavedPins(true);
+  }
+  $('#saved').addEventListener('click', (e) => {
+    const removeBtn = e.target.closest('[data-rm]');
+    const goBtn = e.target.closest('[data-go]');
+    const s = store.get(SAVED_KEY, []);
+    if (removeBtn) {
+      const id = removeBtn.dataset.rm;
+      store.set(SAVED_KEY, s.filter((x) => x.id !== id));
+      renderSaved();
+      render();
+      showSavedPins(true);
+      return;
+    }
+    if (goBtn) {
+      const x = s.find((y) => y.id === goBtn.dataset.go);
+      if (x) map.flyTo([x.lat, x.lng], 17, { duration: 1 });
+    }
+  });
+
+  /* ---------- tabs, collapse, nav ---------- */
+  function setTab(t) {
+    tab = t;
+    $('#resultsTab').classList.toggle('hidden', t !== 'results'); $('#saved').classList.toggle('hidden', t !== 'saved');
+    $$('[data-tab]').forEach((b) => {
+      const on = b.dataset.tab === t; b.setAttribute('aria-selected', String(on));
+      b.className = 'flex-1 rounded-full px-3 py-1.5 ' + (on ? 'bg-gradient-to-r from-blue-600 to-emerald-500 text-white shadow' : 'text-slate-600 hover:bg-white');
+    });
+    showSavedPins(t === 'saved');
+  }
+  $$('[data-tab]').forEach((b) => b.addEventListener('click', () => { setTab(b.dataset.tab); if (b.dataset.tab === 'saved') fitSaved(); }));
+  $('#navSaved').addEventListener('click', () => {
+    if (!$('#panel').classList.contains('hidden') && tab === 'saved') { hidePanel(); return; }   // second click closes it
+    showPanel(); setTab('saved'); fitSaved();
+  });
+  $('#closePanel').addEventListener('click', hidePanel);
+
+  /* ---------- explore: offer "Search this area" after the user pans away ---------- */
+  map.on('moveend', () => {
+    if (!searchPt) return;
+    const c = map.getCenter();
+    moved = km(searchPt, { lat: c.lat, lng: c.lng }) > (+$('#radius').value / 1000) * 0.6;
+    updateArea();
+  });
+  $('#areaBtn').addEventListener('click', () => { const c = map.getCenter(); runSearch({ lat: c.lat, lng: c.lng, label: 'this area' }, { fly: false, fit: false }); });
+
+  window.addEventListener('resize', () => map.invalidateSize());
+  window.addEventListener('load', () => { renderSaved(); setTab('results'); map.invalidateSize(); });
+})();
+</script>
+</body>
+</html>
